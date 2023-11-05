@@ -154,7 +154,7 @@ func TestNewXMLDeposit(t *testing.T) {
 // Test if the XMLDeposit object can Unmarshal a valid XML string
 func TestXMLDeposit_UnmarshalXML(t *testing.T) {
 	deposit := &XMLDepositUnMarshall{}
-	err := xml.Unmarshal([]byte(getValidXMLString()), deposit)
+	err := xml.Unmarshal([]byte(getValidFullDepositXMLString()), deposit)
 	if err != nil {
 		t.Errorf("UnmarshalXML() error = %v", err)
 	}
@@ -176,7 +176,7 @@ func TestXMLDeposit_UnmarshalXML(t *testing.T) {
 }
 
 // Helper function to get a valid XML string for testing purposes
-func getValidXMLString() string {
+func getValidFullDepositXMLString() string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 	<rde:deposit type="FULL" id="20191017001"
 	  xmlns:domain="urn:ietf:params:xml:ns:domain-1.0"
