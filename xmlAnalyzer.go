@@ -141,8 +141,8 @@ func NewXMLAnalyzer(filename string) (*XMLAnalyzer, error) {
 	return &a, nil
 }
 
-// Count the number of lines in a the set of CSV files. Use this to check against the number of objects in the header
-func (a *XMLAnalyzer) CountLinesInCSVFiles() error {
+// Count the number of lines and save the fileSize for the set of CSV files. Use this to check against the number of objects in the header
+func (a *XMLAnalyzer) CountLinesInCSVFilesAndSaveSize() error {
 	for k, csvFile := range a.CSVFiles {
 		file, err := os.OpenFile(csvFile.FileName, os.O_RDONLY, 0444)
 		if err != nil {
@@ -153,6 +153,11 @@ func (a *XMLAnalyzer) CountLinesInCSVFiles() error {
 		if err != nil {
 			return err
 		}
+		fi, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		csvFile.FileSize = fi.Size()
 		csvFile.LineCount = lineCount
 		a.CSVFiles[k] = csvFile
 	}

@@ -423,7 +423,7 @@ func TestCountLinesInCSVFiles(t *testing.T) {
 	a.FlushCSVWriters()
 	a.CloseCSVFiles()
 
-	err = a.CountLinesInCSVFiles()
+	err = a.CountLinesInCSVFilesAndSaveSize()
 	if err != nil {
 		t.Fatalf("CountLinesInCSVFiles failed with error: %v", err)
 	}
@@ -431,6 +431,9 @@ func TestCountLinesInCSVFiles(t *testing.T) {
 	for _, v := range a.CSVFiles {
 		if v.LineCount != 5 {
 			t.Errorf("Expected Linecount to be 5, got %d", v.LineCount)
+		}
+		if v.FileSize == 0 {
+			t.Errorf("Expected FileSize to be > 0, got %d", v.FileSize)
 		}
 	}
 
