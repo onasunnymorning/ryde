@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+// TestIsValidType tests the IsValidType function.
+// It tests if the function returns the expected boolean value for different input types.
 func TestIsValidType(t *testing.T) {
 	tests := []struct {
 		name string
@@ -44,6 +46,8 @@ func TestIsValidType(t *testing.T) {
 	}
 }
 
+// TestNewXMLDeposit tests the NewXMLDeposit function which creates a new XMLDeposit object.
+// It tests the function with different input parameters and checks if the output is as expected.
 func TestNewXMLDeposit(t *testing.T) {
 	watermark := time.Now()
 	tests := []struct {

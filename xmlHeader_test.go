@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+// TestUnMarshallXMLHeader tests the UnMarshallXMLHeader function which unmarshals an XML header string into an XMLHeaderUnMarshall struct.
+// It checks if the TLD and count values are correctly unmarshalled and have the expected values.
 func TestUnMarshallXMLHeader(t *testing.T) {
 	header := XMLHeaderUnMarshall{}
 	err := xml.Unmarshal([]byte(getValidHeaderXMLString()), &header)
@@ -48,7 +50,6 @@ func TestUnMarshallXMLHeader(t *testing.T) {
 			t.Errorf("Unexpected URI '%s'", count.Uri)
 		}
 	}
-
 }
 
 // Returns a valid XML string for the header element.
