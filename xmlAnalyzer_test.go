@@ -438,3 +438,19 @@ func TestCountLinesInCSVFiles(t *testing.T) {
 	}
 
 }
+
+func TestAnalyzeTags(t *testing.T) {
+	f, err := createValidXMLDepositTestFile()
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+	a, err := NewXMLAnalyzer(f)
+	if err != nil {
+		t.Fatalf("NewXMLAnalyzer returned an error: %s", err)
+	}
+	a.AnalyzeDepositTag()
+	err = a.AnalyzeTags()
+	if err != nil {
+		t.Fatalf("AnalyzeTags failed with error: %v", err)
+	}
+}

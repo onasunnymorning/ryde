@@ -1,23 +1,44 @@
 package main
 
 import (
-	"encoding/xml"
-	"fmt"
-	"time"
+	"flag"
+	"log"
 
 	"github.com/onasunnymorning/ryde"
 )
 
 func main() {
-	deposit, err := ryde.NewXMLDeposit("", "123", "456", 0, time.Now().UTC())
-	if err != nil {
-		panic(err)
+
+	filename := flag.String("f", "", "(path to) filename")
+	flag.Parse()
+
+	if *filename == "" {
+		log.Fatal("Please provide a filename")
 	}
 
-	bytes, err := xml.Marshal(deposit)
+	a, err := ryde.NewXMLAnalyzer(*filename)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 
-	fmt.Println(string(bytes))
+	err = a.OpenXMLFile()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = a.CreateXMLDecoder()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = a.AnalyzeDepositTag()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = a.AnalyzeTags()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 }
