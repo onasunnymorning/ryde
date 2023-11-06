@@ -1,8 +1,10 @@
 package ryde
 
 import (
+	"encoding/csv"
 	"fmt"
 	"os"
+	"reflect"
 	"testing"
 )
 
@@ -195,4 +197,241 @@ func createValidXMLDepositTestFile() (string, error) {
 		return "", fmt.Errorf("Failed to write data to file: %v", err)
 	}
 	return f.Name(), nil
+}
+func TestCountLines(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		{
+			name:     "empty string",
+			input:    "",
+			expected: 0,
+		},
+		{
+			name:     "single line",
+			input:    "hello world",
+			expected: 0,
+		},
+		{
+			name:     "two lines",
+			input:    "hello\nworld",
+			expected: 1,
+		},
+		{
+			name:     "multiple lines",
+			input:    "hello\nworld\nhow are you?",
+			expected: 2,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create a temporary file for testing
+			f, err := os.CreateTemp("", "*test.csv")
+			if err != nil {
+				t.Fatalf("Failed to create temporary file: %v", err)
+			}
+			defer os.Remove(f.Name())
+
+			// Write some data to the file
+			data := []byte(tc.input)
+			if _, err := f.Write(data); err != nil {
+				t.Fatalf("Failed to write data to file: %v", err)
+			}
+
+			file, err := os.OpenFile(f.Name(), os.O_RDONLY, 0444)
+			if err != nil {
+				t.Fatalf("Failed to open file: %v", err)
+			}
+			actual, err := CountLines(file)
+			if err != nil {
+				t.Fatalf("CountLines returned an error: %v", err)
+			}
+			if actual != tc.expected {
+				t.Errorf("CountLines(%q) = %d, expected %d", tc.input, actual, tc.expected)
+			}
+		})
+	}
+}
+func TestCreateCSVFiles(t *testing.T) {
+	// Create a temporary file for testing
+	f, err := createValidXMLDepositTestFile()
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+	a, err := NewXMLAnalyzer(f)
+	if err != nil {
+		t.Fatalf("NewXMLAnalyzer returned an error: %s", err)
+	}
+	err = a.CreateCSVFiles()
+	if err != nil {
+		t.Fatalf("CreateCSVFiles failed with error: %v", err)
+	}
+
+	for k, v := range a.CSVFiles {
+		expectedFileName := a.GetBaseXMLFileName() + CSVFilesAndSuffixes[k]
+		if v.FileName != expectedFileName {
+			t.Errorf("Expected CSV file name to be %s, but got %s", expectedFileName, v.FileName)
+		}
+	}
+}
+func TestCreateCSVWriters(t *testing.T) {
+	// Create a temporary file for testing
+	f, err := os.CreateTemp("", "*test.csv")
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+	defer os.Remove(f.Name())
+
+	// Create a new XMLAnalyzer object
+	a := &XMLAnalyzer{
+		CSVFiles: map[string]CSVFile{
+			"test": {
+				FileName: f.Name(),
+			},
+		},
+	}
+
+	// Call the function being tested
+	err = a.CreateCSVWriters()
+	if err != nil {
+		t.Fatalf("CreateCSVWriters failed with error: %v", err)
+	}
+
+	// Check that the file descriptor and CSV writer were set correctly
+	csvFile := a.CSVFiles["test"]
+	if csvFile.fileDescriptor == nil {
+		t.Error("Expected file descriptor to be set")
+	}
+	if csvFile.CsvWriter == nil {
+		t.Error("Expected CSV writer to be set")
+	}
+
+	// Write some data to the CSV file
+	data := [][]string{
+		{"header1", "header2", "header3"},
+		{"data1", "data2", "data3"},
+	}
+	for _, row := range data {
+		err = csvFile.CsvWriter.Write(row)
+		if err != nil {
+			t.Fatalf("Failed to write data to CSV file: %v", err)
+		}
+	}
+	csvFile.CsvWriter.Flush()
+
+	// Read the data from the CSV file and check that it matches the expected data
+	file, err := os.Open(f.Name())
+	if err != nil {
+		t.Fatalf("Failed to open CSV file: %v", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	readData, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("Failed to read data from CSV file: %v", err)
+	}
+	if !reflect.DeepEqual(readData, data) {
+		t.Errorf("Expected data to be %v, got %v", data, readData)
+	}
+}
+func TestFlushCSVWriters(t *testing.T) {
+	// Create a temporary file for testing
+	f, err := createValidXMLDepositTestFile()
+
+	// Create a new CSV file and add it to the XMLAnalyzer's CSVFiles map
+	a, err := NewXMLAnalyzer(f)
+	a.CreateCSVFiles()
+	a.CreateCSVWriters()
+
+	// Flush the CSV writers
+	err = a.FlushCSVWriters()
+	if err != nil {
+		t.Fatalf("FlushCSVWriters failed with error: %v", err)
+	}
+
+	// Check that the CSV writers were flushed
+	for _, v := range a.CSVFiles {
+		if v.CsvWriter != nil {
+			t.Error("Expected CsvWriter to be nil after flushing")
+		}
+	}
+}
+
+func TestCloseCSVFiles(t *testing.T) {
+	// Create temporary CSV files for testing
+	file1, err := os.CreateTemp("", "*test1.csv")
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+	defer os.Remove(file1.Name())
+
+	file2, err := os.CreateTemp("", "*test2.csv")
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+	defer os.Remove(file2.Name())
+
+	// Create a test file
+	f, err := createValidXMLDepositTestFile()
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+
+	// Create a new XMLAnalyzer object and add the CSV files to its CSVFiles map
+	a, err := NewXMLAnalyzer(f)
+	if err != nil {
+		t.Fatalf("NewXMLAnalyzer returned an error: %s", err)
+	}
+	a.CreateCSVFiles()
+	a.CreateCSVWriters()
+
+	// Close the CSV files
+	err = a.CloseCSVFiles()
+	if err != nil {
+		t.Fatalf("CloseCSVFiles failed with error: %v", err)
+	}
+
+	// Check that the file descriptors are nil
+	if a.CSVFiles["file1"].fileDescriptor != nil {
+		t.Errorf("Expected file descriptor for file1 to be nil, got %v", a.CSVFiles["file1"].fileDescriptor)
+	}
+	if a.CSVFiles["file2"].fileDescriptor != nil {
+		t.Errorf("Expected file descriptor for file2 to be nil, got %v", a.CSVFiles["file2"].fileDescriptor)
+	}
+}
+
+func TestCountLinesInCSVFiles(t *testing.T) {
+	f, err := createValidXMLDepositTestFile()
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+	a, err := NewXMLAnalyzer(f)
+	if err != nil {
+		t.Fatalf("NewXMLAnalyzer returned an error: %s", err)
+	}
+	a.CreateCSVFiles()
+	a.CreateCSVWriters()
+	for _, v := range a.CSVFiles {
+		for i := 0; i < 5; i++ {
+			v.CsvWriter.Write([]string{"test"})
+		}
+	}
+	a.FlushCSVWriters()
+	a.CloseCSVFiles()
+
+	err = a.CountLinesInCSVFiles()
+	if err != nil {
+		t.Fatalf("CountLinesInCSVFiles failed with error: %v", err)
+	}
+
+	for _, v := range a.CSVFiles {
+		if v.LineCount != 5 {
+			t.Errorf("Expected Linecount to be 5, got %d", v.LineCount)
+		}
+	}
+
 }

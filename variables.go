@@ -17,4 +17,24 @@ var (
 		"rdePolicy":    "urn:ietf:params:xml:ns:rdePolicy-1.0",
 		"epp":          "urn:ietf:params:xml:ns:epp-1.0",
 	}
+
+	CSVFilesAndSuffixes = map[string]string{
+		"domain":              DOMAIN_FILE_SUFFIX,
+		"domainStatus":        DOMAIN_STATUS_FILE_SUFFIX,
+		"domainNameservers":   DOMAIN_NAMESERVER_FILE_SUFFIX,
+		"domainDnssec":        DOMAIN_DNSSEC_FILE_SUFFIX,
+		"domainTransfers":     DOMAIN_TRANSFER_FILE_SUFFIX,
+		"host":                HOST_FILE_SUFFIX,
+		"hostAddress":         HOST_ADDRESS_FILE_SUFFIX,
+		"hostStatus":          HOST_STATUS_FILE_SUFFIX,
+		"contact":             CONTACT_FILE_SUFFIX,
+		"contactStatus":       CONTACT_STATUS_FILE_SUFFIX,
+		"contactPostalInfo":   CONTACT_PINFO_FILE_SUFFIX,
+		"registrar":           REGISTRAR_FILE_SUFFIX,
+		"registrarPostalInfo": REGISTRAR_PINFO_FILE_SUFFIX,
+		"idnLanguage":         IDN_FILE_SUFFIX,
+		"nndn":                NNDN_FILE_SUFFIX,
+		"uniqueContactID":     UNIQUE_CONTACT_ID_FILE_SUFFIX,
+		"analysis":            ANALYSYS_FILE_SUFFIX,
+	}
 )
