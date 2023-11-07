@@ -11,6 +11,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/schollz/progressbar/v3"
 )
 
 // Defines an struct to hold all assets and information about the XML file being analyzed
@@ -20,6 +22,7 @@ type XMLAnalyzer struct {
 	Deposit  XMLDepositUnMarshall `json:"deposit"`  // The struct for containing the UnMarshalled Deposit info
 	Header   XMLHeaderUnMarshall  `json:"header"`   // The struct for containing the UnMarshalled Header info
 	Counters map[string]int       `json:"counters"` // Holds counters about the number of objects we encountered during analysis. This should match the numbers in the header as well as the number of lines in the CSV files.
+	Errors   []string             `json:"errors"`   // Holds errors encountered during analysis.
 }
 
 // CSVFile represents a CSV file with its metadata and read/write functionality.
@@ -57,6 +60,7 @@ func NewXMLAnalyzer(filename string) (*XMLAnalyzer, error) {
 	fi, _ := f.Stat() // We can ignore the error here because we know the file exists
 	a.XMLFile.FileSize = fi.Size()
 	a.XMLFile.FileName = filename
+	log.Printf("Created Analyzer for %s (%d MB)\n", a.XMLFile.FileName, a.XMLFile.FileSize/1024/1024)
 	a.CSVFiles = make(map[string]CSVFile)
 	// Initialize the counters
 	c := make(map[string]int)
@@ -101,12 +105,19 @@ func (a *XMLAnalyzer) CreateXMLDecoder() error {
 
 // returns an <rde:deposit> tag by reading the tokens from the decoder
 func (a *XMLAnalyzer) AnalyzeDepositTag() error {
-	if a.XMLFile.Decoder == nil {
-		// TODO: Should we return an error here or create the decoder?
-		return ErrNoXMLDecoder
+	progressbar.Default(-1, "Processing <rde:deposit> tag")
+	err := a.OpenXMLFile()
+	if err != nil {
+		return err
 	}
 
-	err := a.XMLFile.Decoder.Decode(&a.Deposit)
+	err = a.CreateXMLDecoder()
+	if err != nil {
+		return err
+	}
+	defer a.CloseXMLFile()
+
+	err = a.XMLFile.Decoder.Decode(&a.Deposit)
 	if err != nil {
 		if err == io.EOF {
 			return ErrNoDepositTagInFile
@@ -144,13 +155,14 @@ func (a *XMLAnalyzer) AnalyzeDepositTag() error {
 	// 	}
 
 	// }
+	fmt.Println("Done")
 	return nil
 }
 
 // Analyze each tag and handle it according to the type of object contained in the tag.
 // Decode the tags we are iterested in and stream the data to the appropriate CSV file.
 func (a *XMLAnalyzer) AnalyzeTags() error {
-	log.Printf("Analyzing %s (%d B)\n", a.XMLFile.FileName, a.XMLFile.FileSize)
+	pbar := progressbar.Default(-1, "Processing object tags")
 
 	err := a.OpenXMLFile()
 	if err != nil {
@@ -178,10 +190,12 @@ func (a *XMLAnalyzer) AnalyzeTags() error {
 
 	// Read the entire file, token by token
 	for {
+		pbar.Add(1)
 		// Read the next token
 		t, tokenErr := a.XMLFile.Decoder.Token()
 		if tokenErr != nil {
 			if tokenErr == io.EOF {
+				fmt.Println("Done")
 				log.Println("Reached end of file")
 				break
 			}
@@ -193,246 +207,42 @@ func (a *XMLAnalyzer) AnalyzeTags() error {
 		case xml.StartElement:
 			switch se.Name.Local {
 			case "header":
-				var header XMLHeaderUnMarshall
-				if err := a.XMLFile.Decoder.DecodeElement(&header, &se); err != nil {
-					return fmt.Errorf("error decoding header: %s", err)
-				}
-				a.Header = header
-			case "registrar":
-				var registrar XMLRegistrar
-				// Found a registrar, add it to the counter for sanity checking
-				a.Counters["registrar"]++
-				// Skip registrars that are not in the registrar namespace
-				if err := a.XMLFile.Decoder.DecodeElement(&registrar, &se); err != nil {
-					return fmt.Errorf("error decoding registrar: %s", tokenErr)
-				}
-				// Prepare the CSV row and standardise the strings and add them to the CSV
-				csvRow := []string{registrar.ID, registrar.Name, strconv.Itoa(registrar.GurID), registrar.Status, registrar.WhoisInfo.URL, registrar.URL, registrar.CrDate, registrar.UpDate, registrar.Voice, registrar.Fax, registrar.Email}
-				err := a.CSVFiles["registrar"].CsvWriter.Write(StandardizeStringSlice(csvRow))
+				err := a.processHeaderTag(&se)
 				if err != nil {
 					return err
 				}
-				// Write the registrar postalinfo to the registrar postalinfo file
-				rPostalInfo := make(map[int][]string)
-				for i, postalInfo := range registrar.PostalInfo {
-					a.Counters["registrarPostalInfo"]++
-					rPostalInfo[i] = append(rPostalInfo[i], registrar.ID)
-					rPostalInfo[i] = append(rPostalInfo[i], postalInfo.Type)
-					// This is clunky but we need to ensure there are always 3 Street elements for CSV length consistency
-					// First add the ones that are there
-					rPostalInfo[i] = append(rPostalInfo[i], postalInfo.Address.Street...)
-					// Then add empty strings for the ones that are missing.
-					// A fully slice of strings with 3 street address lines is 4 elements long
-					// So we keep adding empty street strings until we reach a lenght of 4
-					for len(rPostalInfo[i]) <= 4 {
-						rPostalInfo[i] = append(rPostalInfo[i], "")
-					}
-					rPostalInfo[i] = append(rPostalInfo[i], StandardizeString(postalInfo.Address.City), StandardizeString(postalInfo.Address.StateProvince), StandardizeString(postalInfo.Address.PostalCode), StandardizeString(postalInfo.Address.CountryCode))
-				}
-				for _, v := range rPostalInfo {
-					err := a.CSVFiles["registrarPostalInfo"].CsvWriter.Write(StandardizeStringSlice(v))
-					if err != nil {
-						return err
-					}
+			case "registrar":
+				err := a.processRegistrarTag(&se)
+				if err != nil {
+					return err
 				}
 
 			case "idnTableRef":
-				// Found an IDN table ref, add it to the counter for sanity checking
-				a.Counters["idnTableRef"]++
-				var idnTableRef XMLIdnTableReference
-				if err := a.XMLFile.Decoder.DecodeElement(&idnTableRef, &se); err != nil {
-					return fmt.Errorf("error decoding IDN table ref: %s", tokenErr)
-				}
-				// Write to the output file
-				idnRow := []string{idnTableRef.ID, idnTableRef.Url, idnTableRef.UrlPolicy}
-				err = a.CSVFiles["idnLanguage"].CsvWriter.Write(StandardizeStringSlice(idnRow))
+				err := processIDNTableRefTag(&se, a)
 				if err != nil {
 					return err
 				}
 
 			case "contact":
-				// Found a contact, add it to the counter for sanity checking
-				a.Counters["contact"]++
-				// Skip contact tokens that are not in the contact namespace
-				if se.Name.Space != NameSpace["rdeContact"] {
-					continue
-				}
-				var contact XMLContact
-				if err := a.XMLFile.Decoder.DecodeElement(&contact, &se); err != nil {
-					return fmt.Errorf("error decoding contact: %s", tokenErr)
-				}
-				// Write the contact to the contact file
-				contactRow := []string{contact.ID, contact.RoID, contact.Voice, contact.Fax, contact.Email, contact.ClID, contact.CrRr, contact.CrDate, contact.UpRr, contact.UpDate}
-				err = a.CSVFiles["contact"].CsvWriter.Write(StandardizeStringSlice(contactRow))
+				err := a.processContactTag(&se)
 				if err != nil {
 					return err
-				}
-				// Set Status in statusFile
-				cStatuses := []string{contact.ID}
-				for _, status := range contact.Status {
-					cStatuses = append(cStatuses, status.S)
-				}
-				for i, s := range cStatuses {
-					if i == 0 {
-						continue
-					}
-					a.Counters["contactStatus"]++
-					err = a.CSVFiles["contactStatus"].CsvWriter.Write(StandardizeStringSlice([]string{contact.ID, s}))
-					if err != nil {
-						return err
-					}
-				}
-				// Set postalInfo in postalInfoFile
-				cPostalInfo := make(map[int][]string)
-				for i, postalInfo := range contact.PostalInfo {
-					a.Counters["contactPostalInfo"]++
-					cPostalInfo[i] = append(cPostalInfo[i], contact.ID)
-					cPostalInfo[i] = append(cPostalInfo[i], postalInfo.Type, StandardizeString(postalInfo.Name), StandardizeString(postalInfo.Org))
-					// This is clunky but we need to ensure there are always 3 Street elements for CSV length consistency
-					// First add the ones that are there
-					cPostalInfo[i] = append(cPostalInfo[i], postalInfo.Address.Street...)
-					// Then add empty strings for the ones that are missing.
-					// A fully slice of strings with 3 street address lines is 6 elements long
-					// So we keep adding empty street strings until we reach a lenght of 6
-					for len(cPostalInfo[i]) <= 6 {
-						cPostalInfo[i] = append(cPostalInfo[i], "")
-					}
-					cPostalInfo[i] = append(cPostalInfo[i], postalInfo.Address.City, postalInfo.Address.StateProvince, postalInfo.Address.PostalCode, postalInfo.Address.CountryCode)
-				}
-
-				for _, v := range cPostalInfo {
-					err := a.CSVFiles["contactPostalInfo"].CsvWriter.Write(StandardizeStringSlice(v))
-					if err != nil {
-						return err
-					}
 				}
 
 			case "domain":
-				// Found a domain, add it to the counter for sanity checking
-				a.Counters["domain"]++
-				// Skip domain tokens that are not in the domain namespace
-				if se.Name.Space != NameSpace["rdeDomain"] {
-					continue
-				}
-				var dom XMLDomain
-				if err := a.XMLFile.Decoder.DecodeElement(&dom, &se); err != nil {
-					return fmt.Errorf("error decoding domain: %s", tokenErr)
-				}
-				// Write the domain to the domain file
-				domainRow := []string{string(dom.Name), dom.RoID, dom.UName, dom.IdnTableId, dom.OriginalName, dom.Registrant, dom.ClID, dom.CrRr, dom.CrDate, dom.ExDate, dom.UpRr, dom.UpDate}
-				err = a.CSVFiles["domain"].CsvWriter.Write(StandardizeStringSlice(domainRow))
+				err := processDomainTag(&se, a, uniqueContactIDs)
 				if err != nil {
 					return err
-				}
-				// Add a line to the contactID file for each contact, only if it does not exist yet
-				for _, contact := range dom.Contact {
-					// Only add it if it is not there already
-					if !uniqueContactIDs[contact.ID] {
-						uniqueContactIDs[contact.ID] = true
-						a.Counters["uniqueContactIDs"]++
-					}
-				}
-				// Write the domain statuses to the status file
-				dStatuses := []string{dom.Name}
-				for _, status := range dom.Status {
-					dStatuses = append(dStatuses, status.S)
-				}
-				for i, s := range dStatuses {
-					if i == 0 {
-						continue
-					}
-					a.Counters["domainStatus"]++
-					err := a.CSVFiles["domainStatus"].CsvWriter.Write(StandardizeStringSlice([]string{dom.Name, s}))
-					if err != nil {
-						return err
-					}
-				}
-				// Write the nameservers to the nameserver file
-				dNameservers := []string{dom.Name}
-				for _, ns := range dom.Ns {
-					dNameservers = append(dNameservers, ns.HostObjs...)
-				}
-				for i, ns := range dNameservers {
-					if i == 0 {
-						continue
-					}
-					a.Counters["domainNameservers"]++
-					err := a.CSVFiles["domainNameservers"].CsvWriter.Write(StandardizeStringSlice([]string{dom.Name, ns}))
-					if err != nil {
-						return err
-					}
-				}
-				// Write the dnssec information to the dnssec file
-				for _, dsData := range dom.SecDNS.DSData {
-					a.Counters["domainDnssec"]++
-					dnssecRow := []string{dom.Name, strconv.Itoa(dsData.KeyTag), strconv.Itoa(dsData.Alg), strconv.Itoa(dsData.DigestType), dsData.Digest}
-					err := a.CSVFiles["domainDnssec"].CsvWriter.Write(StandardizeStringSlice(dnssecRow))
-					if err != nil {
-						return err
-					}
-				}
-				// Write the transfer information to the transfer file
-				if dom.TrnData.TrStatus.State != "" {
-					a.Counters["domainTransfers"]++
-					transferRow := []string{dom.Name, dom.TrnData.TrStatus.State, dom.TrnData.ReRr.RegID, dom.TrnData.ReDate, dom.TrnData.ReRr.RegID, dom.TrnData.AcDate, dom.TrnData.ExDate}
-					err := a.CSVFiles["domainTransfers"].CsvWriter.Write(StandardizeStringSlice(transferRow))
-					if err != nil {
-						return err
-					}
 				}
 
 			case "host":
-				// Found a host, add it to the counter for sanity checking
-				a.Counters["host"]++
-				// Skip host tags that are not in the host namespace
-				if se.Name.Space != NameSpace["rdeHost"] {
-					continue
-				}
-				var host XMLHost
-				if err := a.XMLFile.Decoder.DecodeElement(&host, &se); err != nil {
-					return fmt.Errorf("error decoding host: %s", tokenErr)
-				}
-				hostRow := []string{host.Name, host.RoID, host.ClID, host.CrRr, host.CrDate, host.UpRr, host.UpDate}
-				err = a.CSVFiles["host"].CsvWriter.Write(StandardizeStringSlice(hostRow))
+				err := processHostTag(&se, a)
 				if err != nil {
 					return err
 				}
-				// Set Status in statusFile
-				hStatuses := []string{host.Name}
-				for _, status := range host.Status {
-					hStatuses = append(hStatuses, status.S)
-				}
-				for i, s := range hStatuses {
-					if i == 0 {
-						continue
-					}
-					err := a.CSVFiles["hostStatus"].CsvWriter.Write(StandardizeStringSlice([]string{host.Name, s}))
-					if err != nil {
-						return err
-					}
-				}
-				// Set addresses in addrFile
-				for _, addr := range host.Addr {
-					a.Counters["hostAddress"]++
-					err := a.CSVFiles["hostAddress"].CsvWriter.Write(StandardizeStringSlice([]string{host.Name, addr.IP, addr.IP}))
-					if err != nil {
-						return err
-					}
-				}
 
 			case "NNDN":
-				// Found an nndn, add it to the counter for sanity checking
-				a.Counters["nndn"]++
-				// Skip nndns that are not in the nndns namespace
-				if se.Name.Space != NameSpace["rdeNNDN"] {
-					continue
-				}
-				var nndns XMLNNDN
-				if err := a.XMLFile.Decoder.DecodeElement(&nndns, &se); err != nil {
-					return fmt.Errorf("error decoding nndn: %s", tokenErr)
-				}
-				nndnRow := []string{nndns.AName, nndns.UName, nndns.IDNTableID, nndns.OriginalName, nndns.NameState, nndns.CrDate}
-				err := a.CSVFiles["nndn"].CsvWriter.Write(StandardizeStringSlice(nndnRow))
+				err := processNNDNTag(&se, a)
 				if err != nil {
 					return err
 				}
@@ -448,22 +258,12 @@ func (a *XMLAnalyzer) AnalyzeTags() error {
 	}
 	// Now that all tags have been processed
 	// Write the unique contact IDs to the file
-	fmt.Println("Writing unique contact IDs to file")
+	log.Println("Writing unique contact IDs to file")
 	for k := range uniqueContactIDs {
 		err := a.CSVFiles["uniqueContactID"].CsvWriter.Write(StandardizeStringSlice([]string{k}))
 		if err != nil {
 			return err
 		}
-	}
-	// Write the analysis to the file
-	fmt.Println("Writing analysis to file")
-	analysisBytes, err := json.MarshalIndent(a, "", "  ")
-	if err != nil {
-		return err
-	}
-	err = a.CSVFiles["analysis"].CsvWriter.Write([]string{string(analysisBytes)})
-	if err != nil {
-		return err
 	}
 	// Finally, flush the writers and close the files
 	err = a.FlushCSVWriters()
@@ -476,6 +276,62 @@ func (a *XMLAnalyzer) AnalyzeTags() error {
 	}
 
 	return nil
+}
+
+// Writes the analysis results to a JSON file.
+func (a *XMLAnalyzer) WriteJSON() error {
+	//open the file
+	file, err := os.OpenFile(a.CSVFiles["analysis"].FileName, os.O_CREATE|os.O_WRONLY, 0666)
+	// Write the analysis to the file
+	fmt.Println("Writing analysis to file")
+	analysisBytes, err := json.MarshalIndent(a, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(analysisBytes)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// Checks our counters against the numbers in the header and the length of the CSV files and records errors in the analyzer.
+func (a *XMLAnalyzer) CheckHeaderCounters() {
+	for _, v := range a.Header.Count {
+		switch v.Uri {
+		case NameSpace["rdeDomain"]:
+			if v.ID != a.Counters["domain"] {
+				a.Errors = append(a.Errors, fmt.Sprintf("domain count mismatch: header says %d, we found %d", v.ID, a.Counters["domain"]))
+			}
+		case NameSpace["rdeHost"]:
+			if v.ID != a.Counters["host"] {
+				a.Errors = append(a.Errors, fmt.Sprintf("host count mismatch: header says %d, we found %d", v.ID, a.Counters["host"]))
+			}
+		case NameSpace["rdeContact"]:
+			if v.ID != a.Counters["contact"] {
+				a.Errors = append(a.Errors, fmt.Sprintf("contact count mismatch: header says %d, we found %d", v.ID, a.Counters["contact"]))
+			}
+		case NameSpace["rdeRegistrar"]:
+			if v.ID != a.Counters["registrar"] {
+				a.Errors = append(a.Errors, fmt.Sprintf("registrar count mismatch: header says %d, we found %d", v.ID, a.Counters["registrar"]))
+			}
+		case NameSpace["rdeIDN"]:
+			if v.ID != a.Counters["idnTableRef"] {
+				a.Errors = append(a.Errors, fmt.Sprintf("IDN count mismatch: header says %d, we found %d", v.ID, a.Counters["idnTableRef"]))
+			}
+		case NameSpace["rdeNNDN"]:
+			if v.ID != a.Counters["nndn"] {
+				a.Errors = append(a.Errors, fmt.Sprintf("NNDN count mismatch: header says %d, we found %d", v.ID, a.Counters["nndn"]))
+			}
+		case NameSpace["rdeEppParams"]:
+			if v.ID != a.Counters["eppParams"] {
+				log.Printf("EPP params count mismatch: header says %d, we found %d", v.ID, a.Counters["eppParams"])
+				a.Errors = append(a.Errors, fmt.Sprintf("EPP params count mismatch: header says %d, we found %d", v.ID, a.Counters["eppParams"]))
+			}
+		default:
+			a.Errors = append(a.Errors, fmt.Sprintf("unknown URI in header: %s", v.Uri))
+		}
+	}
 }
 
 // Returns the XMLFile.FileName without the file extension.
@@ -571,6 +427,274 @@ func (a *XMLAnalyzer) CloseCSVFiles() error {
 	for _, v := range a.CSVFiles {
 		v.fileDescriptor.Close()
 		v.fileDescriptor = nil
+	}
+	return nil
+}
+
+// Processes a Header object
+func (a *XMLAnalyzer) processHeaderTag(se *xml.StartElement) error {
+	var header XMLHeaderUnMarshall
+	if err := a.XMLFile.Decoder.DecodeElement(&header, se); err != nil {
+		return fmt.Errorf("error decoding header: %s", err)
+	}
+	a.Header = header
+	return nil
+}
+
+// Processes a Registrar object
+func (a *XMLAnalyzer) processRegistrarTag(se *xml.StartElement) error {
+	var registrar XMLRegistrar
+	// Found a registrar, add it to the counter for sanity checking
+	a.Counters["registrar"]++
+	// Skip registrars that are not in the registrar namespace
+	if err := a.XMLFile.Decoder.DecodeElement(&registrar, se); err != nil {
+		return fmt.Errorf("error decoding registrar: %s", err)
+	}
+	// Prepare the CSV row and standardise the strings and add them to the CSV
+	csvRow := []string{registrar.ID, registrar.Name, strconv.Itoa(registrar.GurID), registrar.Status, registrar.WhoisInfo.URL, registrar.URL, registrar.CrDate, registrar.UpDate, registrar.Voice, registrar.Fax, registrar.Email}
+	err := a.CSVFiles["registrar"].CsvWriter.Write(StandardizeStringSlice(csvRow))
+	if err != nil {
+		return err
+	}
+	// Write the registrar postalinfo to the registrar postalinfo file
+	rPostalInfo := make(map[int][]string)
+	for i, postalInfo := range registrar.PostalInfo {
+		a.Counters["registrarPostalInfo"]++
+		rPostalInfo[i] = append(rPostalInfo[i], registrar.ID)
+		rPostalInfo[i] = append(rPostalInfo[i], postalInfo.Type)
+		// This is clunky but we need to ensure there are always 3 Street elements for CSV length consistency
+		// First add the ones that are there
+		rPostalInfo[i] = append(rPostalInfo[i], postalInfo.Address.Street...)
+		// Then add empty strings for the ones that are missing.
+		// A fully slice of strings with 3 street address lines is 4 elements long
+		// So we keep adding empty street strings until we reach a lenght of 4
+		for len(rPostalInfo[i]) <= 4 {
+			rPostalInfo[i] = append(rPostalInfo[i], "")
+		}
+		rPostalInfo[i] = append(rPostalInfo[i], StandardizeString(postalInfo.Address.City), StandardizeString(postalInfo.Address.StateProvince), StandardizeString(postalInfo.Address.PostalCode), StandardizeString(postalInfo.Address.CountryCode))
+	}
+	for _, v := range rPostalInfo {
+		err := a.CSVFiles["registrarPostalInfo"].CsvWriter.Write(StandardizeStringSlice(v))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Processes a Contact object
+func (a *XMLAnalyzer) processContactTag(se *xml.StartElement) error {
+	// Found a contact, add it to the counter for sanity checking
+	a.Counters["contact"]++
+	// Skip contact tokens that are not in the contact namespace
+	if se.Name.Space != NameSpace["rdeContact"] {
+		return nil
+	}
+	var contact XMLContact
+	if err := a.XMLFile.Decoder.DecodeElement(&contact, se); err != nil {
+		return fmt.Errorf("error decoding contact: %s", err)
+	}
+	// Write the contact to the contact file
+	contactRow := []string{contact.ID, contact.RoID, contact.Voice, contact.Fax, contact.Email, contact.ClID, contact.CrRr, contact.CrDate, contact.UpRr, contact.UpDate}
+	err := a.CSVFiles["contact"].CsvWriter.Write(StandardizeStringSlice(contactRow))
+	if err != nil {
+		return err
+	}
+	// Set Status in statusFile
+	cStatuses := []string{contact.ID}
+	for _, status := range contact.Status {
+		cStatuses = append(cStatuses, status.S)
+	}
+	for i, s := range cStatuses {
+		if i == 0 {
+			continue
+		}
+		a.Counters["contactStatus"]++
+		err = a.CSVFiles["contactStatus"].CsvWriter.Write(StandardizeStringSlice([]string{contact.ID, s}))
+		if err != nil {
+			return err
+		}
+	}
+	// Set postalInfo in postalInfoFile
+	cPostalInfo := make(map[int][]string)
+	for i, postalInfo := range contact.PostalInfo {
+		a.Counters["contactPostalInfo"]++
+		cPostalInfo[i] = append(cPostalInfo[i], contact.ID)
+		cPostalInfo[i] = append(cPostalInfo[i], postalInfo.Type, StandardizeString(postalInfo.Name), StandardizeString(postalInfo.Org))
+		// This is clunky but we need to ensure there are always 3 Street elements for CSV length consistency
+		// First add the ones that are there
+		cPostalInfo[i] = append(cPostalInfo[i], postalInfo.Address.Street...)
+		// Then add empty strings for the ones that are missing.
+		// A fully slice of strings with 3 street address lines is 6 elements long
+		// So we keep adding empty street strings until we reach a lenght of 6
+		for len(cPostalInfo[i]) <= 6 {
+			cPostalInfo[i] = append(cPostalInfo[i], "")
+		}
+		cPostalInfo[i] = append(cPostalInfo[i], postalInfo.Address.City, postalInfo.Address.StateProvince, postalInfo.Address.PostalCode, postalInfo.Address.CountryCode)
+	}
+
+	for _, v := range cPostalInfo {
+		err := a.CSVFiles["contactPostalInfo"].CsvWriter.Write(StandardizeStringSlice(v))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Processes a IDNTableRef object
+func processIDNTableRefTag(se *xml.StartElement, a *XMLAnalyzer) error {
+	// Found an IDN table ref, add it to the counter for sanity checking
+	a.Counters["idnTableRef"]++
+	var idnTableRef XMLIdnTableReference
+	if err := a.XMLFile.Decoder.DecodeElement(&idnTableRef, se); err != nil {
+		return fmt.Errorf("error decoding IDN table ref: %s", err)
+	}
+	// Write to the output file
+	idnRow := []string{idnTableRef.ID, idnTableRef.Url, idnTableRef.UrlPolicy}
+	err := a.CSVFiles["idnLanguage"].CsvWriter.Write(StandardizeStringSlice(idnRow))
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// Processes a NNDN object
+func processNNDNTag(se *xml.StartElement, a *XMLAnalyzer) error {
+	// Found an nndn, add it to the counter for sanity checking
+	a.Counters["nndn"]++
+	// Skip nndns that are not in the nndns namespace
+	if se.Name.Space != NameSpace["rdeNNDN"] {
+		return nil
+	}
+	var nndns XMLNNDN
+	if err := a.XMLFile.Decoder.DecodeElement(&nndns, se); err != nil {
+		return fmt.Errorf("error decoding nndn: %s", err)
+	}
+	nndnRow := []string{nndns.AName, nndns.UName, nndns.IDNTableID, nndns.OriginalName, nndns.NameState, nndns.CrDate}
+	err := a.CSVFiles["nndn"].CsvWriter.Write(StandardizeStringSlice(nndnRow))
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// Processes a Domain object
+func processDomainTag(se *xml.StartElement, a *XMLAnalyzer, uniqueContactIDs map[string]bool) error {
+
+	// Found a domain, add it to the counter for sanity checking
+	a.Counters["domain"]++
+	// Skip domain tokens that are not in the domain namespace
+	if se.Name.Space != NameSpace["rdeDomain"] {
+		return nil
+	}
+	var dom XMLDomain
+	if err := a.XMLFile.Decoder.DecodeElement(&dom, se); err != nil {
+		return fmt.Errorf("error decoding domain: %s", err)
+	}
+	// Write the domain to the domain file
+	domainRow := []string{string(dom.Name), dom.RoID, dom.UName, dom.IdnTableId, dom.OriginalName, dom.Registrant, dom.ClID, dom.CrRr, dom.CrDate, dom.ExDate, dom.UpRr, dom.UpDate}
+	err := a.CSVFiles["domain"].CsvWriter.Write(StandardizeStringSlice(domainRow))
+	if err != nil {
+		return err
+	}
+	// Add a line to the contactID file for each contact, only if it does not exist yet
+	for _, contact := range dom.Contact {
+		// Only add it if it is not there already
+		if !uniqueContactIDs[contact.ID] {
+			uniqueContactIDs[contact.ID] = true
+			a.Counters["uniqueContactIDs"]++
+		}
+	}
+	// Write the domain statuses to the status file
+	dStatuses := []string{dom.Name}
+	for _, status := range dom.Status {
+		dStatuses = append(dStatuses, status.S)
+	}
+	for i, s := range dStatuses {
+		if i == 0 {
+			continue
+		}
+		a.Counters["domainStatus"]++
+		err := a.CSVFiles["domainStatus"].CsvWriter.Write(StandardizeStringSlice([]string{dom.Name, s}))
+		if err != nil {
+			return err
+		}
+	}
+	// Write the nameservers to the nameserver file
+	dNameservers := []string{dom.Name}
+	for _, ns := range dom.Ns {
+		dNameservers = append(dNameservers, ns.HostObjs...)
+	}
+	for i, ns := range dNameservers {
+		if i == 0 {
+			continue
+		}
+		a.Counters["domainNameservers"]++
+		err := a.CSVFiles["domainNameservers"].CsvWriter.Write(StandardizeStringSlice([]string{dom.Name, ns}))
+		if err != nil {
+			return err
+		}
+	}
+	// Write the dnssec information to the dnssec file
+	for _, dsData := range dom.SecDNS.DSData {
+		a.Counters["domainDnssec"]++
+		dnssecRow := []string{dom.Name, strconv.Itoa(dsData.KeyTag), strconv.Itoa(dsData.Alg), strconv.Itoa(dsData.DigestType), dsData.Digest}
+		err := a.CSVFiles["domainDnssec"].CsvWriter.Write(StandardizeStringSlice(dnssecRow))
+		if err != nil {
+			return err
+		}
+	}
+	// Write the transfer information to the transfer file
+	if dom.TrnData.TrStatus.State != "" {
+		a.Counters["domainTransfers"]++
+		transferRow := []string{dom.Name, dom.TrnData.TrStatus.State, dom.TrnData.ReRr.RegID, dom.TrnData.ReDate, dom.TrnData.ReRr.RegID, dom.TrnData.AcDate, dom.TrnData.ExDate}
+		err := a.CSVFiles["domainTransfers"].CsvWriter.Write(StandardizeStringSlice(transferRow))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Processes a Host object
+func processHostTag(se *xml.StartElement, a *XMLAnalyzer) error {
+	// Found a host, add it to the counter for sanity checking
+	a.Counters["host"]++
+	// Skip host tags that are not in the host namespace
+	if se.Name.Space != NameSpace["rdeHost"] {
+		return nil
+	}
+	var host XMLHost
+	if err := a.XMLFile.Decoder.DecodeElement(&host, se); err != nil {
+		return fmt.Errorf("error decoding host: %s", err)
+	}
+	hostRow := []string{host.Name, host.RoID, host.ClID, host.CrRr, host.CrDate, host.UpRr, host.UpDate}
+	err := a.CSVFiles["host"].CsvWriter.Write(StandardizeStringSlice(hostRow))
+	if err != nil {
+		return err
+	}
+	// Set Status in statusFile
+	hStatuses := []string{host.Name}
+	for _, status := range host.Status {
+		hStatuses = append(hStatuses, status.S)
+	}
+	for i, s := range hStatuses {
+		if i == 0 {
+			continue
+		}
+		err := a.CSVFiles["hostStatus"].CsvWriter.Write(StandardizeStringSlice([]string{host.Name, s}))
+		if err != nil {
+			return err
+		}
+	}
+	// Set addresses in addrFile
+	for _, addr := range host.Addr {
+		a.Counters["hostAddress"]++
+		err := a.CSVFiles["hostAddress"].CsvWriter.Write(StandardizeStringSlice([]string{host.Name, addr.IP, addr.IP}))
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }

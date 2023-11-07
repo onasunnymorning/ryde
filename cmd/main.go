@@ -21,22 +21,24 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = a.OpenXMLFile()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = a.CreateXMLDecoder()
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	err = a.AnalyzeDepositTag()
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	err = a.AnalyzeTags()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = a.CountLinesInCSVFilesAndSaveSize()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	a.CheckHeaderCounters()
+
+	err = a.WriteJSON()
 	if err != nil {
 		log.Fatal(err)
 	}

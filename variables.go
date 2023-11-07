@@ -35,6 +35,7 @@ var (
 		"idnLanguage":         IDN_FILE_SUFFIX,
 		"nndn":                NNDN_FILE_SUFFIX,
 		"uniqueContactID":     UNIQUE_CONTACT_ID_FILE_SUFFIX,
-		"analysis":            ANALYSYS_FILE_SUFFIX,
+		// TODO: move this to a separate part in the struct as its not a csv file7pu
+		"analysis": ANALYSYS_FILE_SUFFIX,
 	}
 )
