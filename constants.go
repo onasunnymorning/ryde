@@ -18,4 +18,6 @@ const (
 	NNDN_FILE_SUFFIX              = "-nndns.csv"
 	UNIQUE_CONTACT_ID_FILE_SUFFIX = "-uniqueContactIDs.csv"
 	ANALYSYS_FILE_SUFFIX          = "-analysis.json"
+	EPP_PARAMS_FILE_SUFFIX        = "-eppParams.csv"
+	POLICY_FILE_SUFFIX            = "-policies.csv"
 )

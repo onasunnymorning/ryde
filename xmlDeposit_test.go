@@ -278,6 +278,14 @@ func getValidFullDepositXMLString() string {
 		  <rdeDomain:crRr>RegistrarX</rdeDomain:crRr>
 		  <rdeDomain:crDate>1999-04-03T22:00:00.0Z</rdeDomain:crDate>
 		  <rdeDomain:exDate>2025-04-03T22:00:00.0Z</rdeDomain:exDate>
+		  <rdeDomain:secDNS>
+		  <secDNS:dsData xmlns:secDNS="urn:ietf:params:xml:ns:secDNS-1.1">
+			  <secDNS:keyTag>60485</secDNS:keyTag>
+			  <secDNS:alg>5</secDNS:alg>
+			  <secDNS:digestType>1</secDNS:digestType>
+			  <secDNS:digest>2BB183AF5F22588179A53B0A98631FAD1A292118</secDNS:digest>
+		  </secDNS:dsData>
+	  </rdeDomain:secDNS>
 		</rdeDomain:domain>
 	
 		<!-- Host: ns1.example.example -->

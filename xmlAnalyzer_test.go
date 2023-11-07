@@ -2,7 +2,9 @@ package ryde
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"testing"
@@ -341,9 +343,15 @@ func TestCreateCSVWriters(t *testing.T) {
 func TestFlushCSVWriters(t *testing.T) {
 	// Create a temporary file for testing
 	f, err := createValidXMLDepositTestFile()
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
 
 	// Create a new CSV file and add it to the XMLAnalyzer's CSVFiles map
 	a, err := NewXMLAnalyzer(f)
+	if err != nil {
+		t.Fatalf("NewXMLAnalyzer returned an error: %s", err)
+	}
 	a.CreateCSVFiles()
 	a.CreateCSVWriters()
 
@@ -453,4 +461,124 @@ func TestAnalyzeTags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AnalyzeTags failed with error: %v", err)
 	}
+}
+func TestCheckCSVColumnLength(t *testing.T) {
+	f, err := createValidXMLDepositTestFile()
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+	defer os.Remove(f)
+	a, err := NewXMLAnalyzer(f)
+	if err != nil {
+		t.Fatalf("NewXMLAnalyzer returned an error: %s", err)
+	}
+
+	a.AnalyzeDepositTag()
+
+	a.AnalyzeTags()
+
+	// this should not return errors
+	a.CheckCSVColumnLength()
+	if len(a.Errors) != 0 {
+		t.Errorf("Expected 0 errors, got %d", len(a.Errors))
+	}
+
+	// Make sure we get errors
+	new := make(map[string][]string)
+	for k, v := range CSVFilesAndHeaders {
+		v = append(v, "test")
+		new[k] = v
+	}
+	CSVFilesAndHeaders = new
+	// This should create 14 errors
+	a.CheckCSVColumnLength()
+	if len(a.Errors) != 15 {
+		t.Errorf("Expected 15 errors, got %d", len(a.Errors))
+	}
+}
+
+// TestWriteJSON tests the WriteJSON method of the XMLAnalyzer struct.
+// It creates a temporary file for testing, initializes a new XMLAnalyzer with the file name,
+// calls the AnalyzeDepositTag method to populate the struct, and then calls WriteJSON.
+// It then reads the JSON file and checks if the contents match the expected values.
+func TestWriteJSON(t *testing.T) {
+	// Create a temporary file for testing
+	f, err := createValidXMLDepositTestFile()
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+	defer os.Remove(f)
+
+	a, err := NewXMLAnalyzer(f)
+	if err != nil {
+		t.Fatalf("NewXMLAnalyzer returned an error: %s", err)
+	}
+
+	err = a.AnalyzeDepositTag()
+	if err != nil {
+		t.Fatalf("AnalyzeDepositTag(), returned an error: %s", err)
+	}
+
+	err = a.AnalyzeTags()
+	if err != nil {
+		t.Fatalf("AnalyzeTags(), returned an error: %s", err)
+	}
+
+	err = a.WriteJSON()
+	if err != nil {
+		t.Fatalf("WriteJSON(), returned an error: %s", err)
+	}
+
+	// Read the JSON file and check if the contents match the expected values
+	jsonFile, err := os.Open(a.CSVFiles["analysis"].FileName)
+	if err != nil {
+		t.Fatalf("Failed to open JSON file: %v", err)
+	}
+	defer jsonFile.Close()
+
+	jsonBytes, err := io.ReadAll(jsonFile)
+	if err != nil {
+		t.Fatalf("Failed to read JSON file: %v", err)
+	}
+
+	a2, _ := NewXMLAnalyzer(f)
+	json.Unmarshal(jsonBytes, &a2)
+
+	for k := range a.CSVFiles {
+		if a2.CSVFiles[k].FileName != a.CSVFiles[k].FileName {
+			t.Errorf("Expected CSV file name to be %s, got %s", a.CSVFiles[k].FileName, a2.CSVFiles[k].FileName)
+		}
+		if a2.CSVFiles[k].LineCount != a.CSVFiles[k].LineCount {
+			t.Errorf("Expected LineCount to be %d, got %d", a.CSVFiles[k].LineCount, a2.CSVFiles[k].LineCount)
+		}
+		if a2.CSVFiles[k].FileSize != a.CSVFiles[k].FileSize {
+			t.Errorf("Expected FileSize to be %d, got %d", a.CSVFiles[k].FileSize, a2.CSVFiles[k].FileSize)
+		}
+	}
+}
+
+func TestCheckCounterValidationRules(t *testing.T) {
+	f, err := createValidXMLDepositTestFile()
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+	defer os.Remove(f)
+	a, err := NewXMLAnalyzer(f)
+	if err != nil {
+		t.Fatalf("NewXMLAnalyzer returned an error: %s", err)
+	}
+
+	a.AnalyzeDepositTag()
+
+	a.AnalyzeTags()
+
+	a.CheckValidationRules()
+	if err != nil {
+		t.Fatalf("CheckValidationRules failed with error: %v", err)
+	}
+
+	if len(a.Errors) != 22 {
+		t.Errorf("Expected 21 errors, got %d", len(a.Errors))
+	}
+
 }

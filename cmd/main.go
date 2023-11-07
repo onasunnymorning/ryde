@@ -36,7 +36,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	a.CheckHeaderCounters()
+	a.CheckValidationRules()
+
+	a.CheckCSVColumnLength()
 
 	err = a.WriteJSON()
 	if err != nil {

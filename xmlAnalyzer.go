@@ -42,6 +42,13 @@ type XMLFile struct {
 	Decoder  *xml.Decoder `json:"-"`
 }
 
+// CounterValidationRule represents a counter validation rule.
+type CounterValidationRule struct {
+	FileRef     string
+	HeaderRef   string
+	HeaderMatch bool
+}
+
 // NewXMLAnalyzer creates a new instance of XMLAnalyzer and returns a pointer to it.
 // It takes a filename string as input and returns an error if the file cannot be opened or its size cannot be determined.
 // The function opens the file, checks its size, and saves the filename and size to the XMLFile field of the XMLAnalyzer struct.
@@ -81,7 +88,7 @@ func (a *XMLAnalyzer) OpenXMLFile() error {
 	return nil
 }
 
-// Closes the XMLFile.osFile and removes the pointers from the XMLFile.osFile and XMLFile.Decoder fields.
+// CloseXMLFile Closes the XMLFile.osFile and removes the pointers from the XMLFile.osFile and XMLFile.Decoder fields.
 func (a *XMLAnalyzer) CloseXMLFile() error {
 	err := a.XMLFile.osFile.Close()
 	if err != nil {
@@ -93,7 +100,7 @@ func (a *XMLAnalyzer) CloseXMLFile() error {
 	return nil
 }
 
-// Returns an XML decoder for the XMLFile.
+// CreateXMLDecoder Returns an XML decoder for the XMLFile.
 func (a *XMLAnalyzer) CreateXMLDecoder() error {
 	if a.XMLFile.osFile == nil {
 		// TODO: Should we return an error here or open the file?
@@ -103,7 +110,7 @@ func (a *XMLAnalyzer) CreateXMLDecoder() error {
 	return nil
 }
 
-// returns an <rde:deposit> tag by reading the tokens from the decoder
+// AnalyzeDepositTag returns an <rde:deposit> tag by reading the tokens from the decoder and storing the result in the XMLAnalyzer.Deposit field.
 func (a *XMLAnalyzer) AnalyzeDepositTag() error {
 	progressbar.Default(-1, "Processing <rde:deposit> tag")
 	err := a.OpenXMLFile()
@@ -159,8 +166,8 @@ func (a *XMLAnalyzer) AnalyzeDepositTag() error {
 	return nil
 }
 
-// Analyze each tag and handle it according to the type of object contained in the tag.
-// Decode the tags we are iterested in and stream the data to the appropriate CSV file.
+// AnalyzeTags Analyzes each tag and handle it according to the type of object contained in the tag.
+// Decode the tags we are iterested in and stream the data to the appropriate CSV file while collecting counters for sanity checking post analysis.
 func (a *XMLAnalyzer) AnalyzeTags() error {
 	pbar := progressbar.Default(-1, "Processing object tags")
 
@@ -278,10 +285,14 @@ func (a *XMLAnalyzer) AnalyzeTags() error {
 	return nil
 }
 
-// Writes the analysis results to a JSON file.
+// WriteJSON Writes content of the XMLAnalyzer struct to a JSON file.
+// After analysis, the XMLAnalyzer struct contains all the information about the XML file, CSV files and holds several counters and errors.
 func (a *XMLAnalyzer) WriteJSON() error {
 	//open the file
 	file, err := os.OpenFile(a.CSVFiles["analysis"].FileName, os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		return err
+	}
 	// Write the analysis to the file
 	fmt.Println("Writing analysis to file")
 	analysisBytes, err := json.MarshalIndent(a, "", "  ")
@@ -295,43 +306,25 @@ func (a *XMLAnalyzer) WriteJSON() error {
 	return nil
 }
 
-// Checks our counters against the numbers in the header and the length of the CSV files and records errors in the analyzer.
-func (a *XMLAnalyzer) CheckHeaderCounters() {
-	for _, v := range a.Header.Count {
-		switch v.Uri {
-		case NameSpace["rdeDomain"]:
-			if v.ID != a.Counters["domain"] {
-				a.Errors = append(a.Errors, fmt.Sprintf("domain count mismatch: header says %d, we found %d", v.ID, a.Counters["domain"]))
+// CheckValidationRules Checks the length of the CSV files against the number of objects in the header and records errors in the analyzer.
+func (a *XMLAnalyzer) CheckValidationRules() {
+	for _, r := range CounterValidationRules {
+		// Always check for an exact match agains the counters we created during processing
+		if a.CSVFiles[r.FileRef].LineCount != a.Counters[r.FileRef] {
+			a.Errors = append(a.Errors, fmt.Sprintf("CSV file %s has %d lines, expected %d ", r.FileRef, a.CSVFiles[r.FileRef].LineCount, a.Counters[r.FileRef]))
+		}
+		// Only check against the header if we expect an exact match with the counters in the header
+		if r.HeaderMatch {
+			for _, v := range a.Header.Count {
+				if v.Uri == NameSpace[r.HeaderRef] {
+					if v.ID != a.CSVFiles[r.FileRef].LineCount {
+						a.Errors = append(a.Errors, fmt.Sprintf("CSV file %s has %d lines, header says %d objects", r.FileRef, a.CSVFiles[r.FileRef].LineCount, v.ID))
+					}
+				}
 			}
-		case NameSpace["rdeHost"]:
-			if v.ID != a.Counters["host"] {
-				a.Errors = append(a.Errors, fmt.Sprintf("host count mismatch: header says %d, we found %d", v.ID, a.Counters["host"]))
-			}
-		case NameSpace["rdeContact"]:
-			if v.ID != a.Counters["contact"] {
-				a.Errors = append(a.Errors, fmt.Sprintf("contact count mismatch: header says %d, we found %d", v.ID, a.Counters["contact"]))
-			}
-		case NameSpace["rdeRegistrar"]:
-			if v.ID != a.Counters["registrar"] {
-				a.Errors = append(a.Errors, fmt.Sprintf("registrar count mismatch: header says %d, we found %d", v.ID, a.Counters["registrar"]))
-			}
-		case NameSpace["rdeIDN"]:
-			if v.ID != a.Counters["idnTableRef"] {
-				a.Errors = append(a.Errors, fmt.Sprintf("IDN count mismatch: header says %d, we found %d", v.ID, a.Counters["idnTableRef"]))
-			}
-		case NameSpace["rdeNNDN"]:
-			if v.ID != a.Counters["nndn"] {
-				a.Errors = append(a.Errors, fmt.Sprintf("NNDN count mismatch: header says %d, we found %d", v.ID, a.Counters["nndn"]))
-			}
-		case NameSpace["rdeEppParams"]:
-			if v.ID != a.Counters["eppParams"] {
-				log.Printf("EPP params count mismatch: header says %d, we found %d", v.ID, a.Counters["eppParams"])
-				a.Errors = append(a.Errors, fmt.Sprintf("EPP params count mismatch: header says %d, we found %d", v.ID, a.Counters["eppParams"]))
-			}
-		default:
-			a.Errors = append(a.Errors, fmt.Sprintf("unknown URI in header: %s", v.Uri))
 		}
 	}
+
 }
 
 // Returns the XMLFile.FileName without the file extension.
@@ -346,7 +339,6 @@ func (a *XMLAnalyzer) CountLinesInCSVFilesAndSaveSize() error {
 		if err != nil {
 			return err
 		}
-		defer file.Close()
 		lineCount, err := CountLines(file)
 		if err != nil {
 			return err
@@ -358,8 +350,33 @@ func (a *XMLAnalyzer) CountLinesInCSVFilesAndSaveSize() error {
 		csvFile.FileSize = fi.Size()
 		csvFile.LineCount = lineCount
 		a.CSVFiles[k] = csvFile
+		err = file.Close()
+		if err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// Count the number of columns in the CSV files and match them agains the headers
+func (a *XMLAnalyzer) CheckCSVColumnLength() {
+	for k, csvFile := range a.CSVFiles {
+		// Skip the analysis file
+		if k == "analysis" {
+			continue
+		}
+		file, err := os.Open(csvFile.FileName)
+		if err != nil {
+			a.Errors = append(a.Errors, fmt.Sprintf("error opening file %s: %s", csvFile.FileName, err))
+		}
+		reader := csv.NewReader(file)
+		reader.FieldsPerRecord = len(CSVFilesAndHeaders[k])
+		_, err = reader.ReadAll()
+		if err != nil {
+			a.Errors = append(a.Errors, fmt.Sprintf("CSV column count mismatch in file %s: %s", csvFile.FileName, err))
+		}
+		file.Close()
+	}
 }
 
 // Count the number of lines in a file by looking for \n occurrences. Use this to check against the number of objects in the header
@@ -445,11 +462,11 @@ func (a *XMLAnalyzer) processHeaderTag(se *xml.StartElement) error {
 func (a *XMLAnalyzer) processRegistrarTag(se *xml.StartElement) error {
 	var registrar XMLRegistrar
 	// Found a registrar, add it to the counter for sanity checking
-	a.Counters["registrar"]++
 	// Skip registrars that are not in the registrar namespace
 	if err := a.XMLFile.Decoder.DecodeElement(&registrar, se); err != nil {
 		return fmt.Errorf("error decoding registrar: %s", err)
 	}
+	a.Counters["registrar"]++
 	// Prepare the CSV row and standardise the strings and add them to the CSV
 	csvRow := []string{registrar.ID, registrar.Name, strconv.Itoa(registrar.GurID), registrar.Status, registrar.WhoisInfo.URL, registrar.URL, registrar.CrDate, registrar.UpDate, registrar.Voice, registrar.Fax, registrar.Email}
 	err := a.CSVFiles["registrar"].CsvWriter.Write(StandardizeStringSlice(csvRow))
@@ -485,11 +502,11 @@ func (a *XMLAnalyzer) processRegistrarTag(se *xml.StartElement) error {
 // Processes a Contact object
 func (a *XMLAnalyzer) processContactTag(se *xml.StartElement) error {
 	// Found a contact, add it to the counter for sanity checking
-	a.Counters["contact"]++
 	// Skip contact tokens that are not in the contact namespace
 	if se.Name.Space != NameSpace["rdeContact"] {
 		return nil
 	}
+	a.Counters["contact"]++
 	var contact XMLContact
 	if err := a.XMLFile.Decoder.DecodeElement(&contact, se); err != nil {
 		return fmt.Errorf("error decoding contact: %s", err)
@@ -545,7 +562,7 @@ func (a *XMLAnalyzer) processContactTag(se *xml.StartElement) error {
 // Processes a IDNTableRef object
 func processIDNTableRefTag(se *xml.StartElement, a *XMLAnalyzer) error {
 	// Found an IDN table ref, add it to the counter for sanity checking
-	a.Counters["idnTableRef"]++
+	a.Counters["idnLanguage"]++
 	var idnTableRef XMLIdnTableReference
 	if err := a.XMLFile.Decoder.DecodeElement(&idnTableRef, se); err != nil {
 		return fmt.Errorf("error decoding IDN table ref: %s", err)
@@ -562,11 +579,11 @@ func processIDNTableRefTag(se *xml.StartElement, a *XMLAnalyzer) error {
 // Processes a NNDN object
 func processNNDNTag(se *xml.StartElement, a *XMLAnalyzer) error {
 	// Found an nndn, add it to the counter for sanity checking
-	a.Counters["nndn"]++
 	// Skip nndns that are not in the nndns namespace
 	if se.Name.Space != NameSpace["rdeNNDN"] {
 		return nil
 	}
+	a.Counters["nndn"]++
 	var nndns XMLNNDN
 	if err := a.XMLFile.Decoder.DecodeElement(&nndns, se); err != nil {
 		return fmt.Errorf("error decoding nndn: %s", err)
@@ -603,7 +620,7 @@ func processDomainTag(se *xml.StartElement, a *XMLAnalyzer, uniqueContactIDs map
 		// Only add it if it is not there already
 		if !uniqueContactIDs[contact.ID] {
 			uniqueContactIDs[contact.ID] = true
-			a.Counters["uniqueContactIDs"]++
+			a.Counters["uniqueContactID"]++
 		}
 	}
 	// Write the domain statuses to the status file
@@ -677,6 +694,7 @@ func processHostTag(se *xml.StartElement, a *XMLAnalyzer) error {
 	// Set Status in statusFile
 	hStatuses := []string{host.Name}
 	for _, status := range host.Status {
+		a.Counters["hostStatus"]++
 		hStatuses = append(hStatuses, status.S)
 	}
 	for i, s := range hStatuses {
